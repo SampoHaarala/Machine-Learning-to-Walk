@@ -8,7 +8,7 @@ using UnityEngine;
 /*
  * SNNController
  *
- * Attach this component to a GameObject in your Unity scene to
+ * Attach this component to a GameObject in a Unity scene to
  * control the character via a spiking neural network running in
  * Python.  The component maintains a TCP connection to the Python
  * server, sends features each physics tick and applies the
@@ -17,8 +17,8 @@ using UnityEngine;
  * The script assumes you have a humanoid with configurable joints
  * representing hips, knees, ankles, spine, shoulders and elbows.
  * You must populate the `joints` array in the Inspector with the
- * appropriate Joint components (e.g. ArticulationBody or
- * ConfigurableJoint) in the same order as the Python model's
+ * appropriate CharacterJoint components in the same order as the 
+ * Python model's
  * outputs.
  */
 
@@ -196,3 +196,4 @@ public class SNNController : MonoBehaviour
         // TO-DO Implement
     }
 }
+
