@@ -18,8 +18,7 @@ using UnityEngine;
  * representing hips, knees, ankles, spine, shoulders and elbows.
  * You must populate the `joints` array in the Inspector with the
  * appropriate CharacterJoint components in the same order as the 
- * Python model's
- * outputs.
+ * Python model's outputs.
  */
 
 public class SNNController : MonoBehaviour
@@ -196,4 +195,5 @@ public class SNNController : MonoBehaviour
         // TO-DO Implement
     }
 }
+
 
