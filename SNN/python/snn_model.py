@@ -88,6 +88,10 @@ class SpikingNetwork:
         ), on_pre='v_post += w; e += 0.01', on_post='e -= 0.01', name='Shout')
         # Note: e increments are a simple pair-based surrogate (A+/-) for eligibility.
 
+        # Copying the brain event of efference copy.
+        # In the brain it helps with predicting consequences of actions.
+        self.South = Synapses(self.G_out, self.G_h, model='w:1', on_pre='v_post += w', name='Shout')
+
         # Connections for the cerebellum
         self.Sinc = Synapses(self.G_in, self.G_c, model='w:1; xi:1',on_pre='v_post += w; xi += 0.01', name='Sinc')
         self.Shc  = Synapses(self.G_h,  self.G_c, model='w:1',on_pre='v_post += w', name='Shc')
@@ -100,9 +104,9 @@ class SpikingNetwork:
         self.Shc.connect(p=0.2)
         self.Shc.w = '0.1*rand()'
         self.Sinh.connect(p=0.3); self.Shh.connect(p=0.05); self.Shout.connect(p=0.4)
-        self.Sinh.w[:]   = rand_w(self.Sinh.w.shape,   0.5)
-        self.Shh.w[:]   = rand_w(self.Shh.w.shape,   0.2)
-        self.Shout.w[:] = rand_w(self.Shout.w.shape, 0.3)
+        self.Sinh.w[:]   = rand_w(self.Sinh.w.shape, 0.5)
+        self.Shh.w[:]    = rand_w(self.Shh.w.shape, 0.2)
+        self.Shout.w[:]  = rand_w(self.Shout.w.shape, 0.3)
 
         # Reward-modulated plasticity parameters (names in namespace for live update)
         self.wmin, self.wmax = -1.5, 1.5

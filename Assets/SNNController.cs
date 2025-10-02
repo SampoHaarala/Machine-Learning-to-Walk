@@ -47,7 +47,6 @@ public class SNNController : MonoBehaviour
     // model (i.e. number of degrees of freedom).  You can assign
     // joint components here via the Inspector.
     public CharacterJoint[] joints;
-    private List<List<int>> dofPerJoint;
 
     // Rigidbody for calculating velocity.
     public Rigidbody rb;
@@ -70,17 +69,6 @@ public class SNNController : MonoBehaviour
         //Physics.autoSimulation = false;
         // Get the joints.
         joints = GetComponentsInChildren<CharacterJoint>();
-
-        // Create a list of the DoF each joint has.
-        for (int i = 0; i < joints.Length; i++)
-        {
-            int dof = 0;
-            for (int j = 0; j < 6; j++)
-            {
-                if (IsAxisLocked(joint, j)) dof++;
-            }
-            dofPerJoint[i] = dof;
-        }
 
         // For debugging.
         foreach (CharacterJoint joint in joints)
@@ -150,13 +138,22 @@ public class SNNController : MonoBehaviour
         float[] features = new float[21];
         for (int i = 0; i < features.Length; i++)
         {
-            // TO-DO Retrieve rotation of all the axis
-            // allowed to move in each joint.
-            for (int j = 0; j < dofPerJoint[i]; j++)
+            // Get all angular velocity data of the joint.
+            Vector3 wLocal = cj.transform.InverseTransformDirection(rb.angularVelocity) * Mathf.Rad2Deg;
+            if (IsAxisLocked(0))
             {
-                features[j] 
+                features[i] = wLocal.x;
+                i++;
             }
-            features[i] = 0f;
+            if (IsAxisLocked(1))
+            {
+                features[i] = wLocal.y;
+                i++;
+            }
+            if (IsAxisLocked(2))
+            {
+                features[i] = wLocal.z;
+            }
         }
 
         // Reward is received from movement in the z-axis.
@@ -241,12 +238,9 @@ public class SNNController : MonoBehaviour
     {
         switch (axis)
         {
-            case 0: return j.angularXMotion == ConfigurableJointMotion.Locked;
-            case 1: return j.angularYMotion == ConfigurableJointMotion.Locked;
-            case 2: return j.angularZMotion == ConfigurableJointMotion.Locked;
-            case 3: return Mathf.Approximately(j.lowTwistLimit.limit, 0f) && Mathf.Approximately(j.highTwistLimit.limit, 0f);
-            case 4: return Mathf.Approximately(j.swing1Limit.limit, 0f);
-            case 5: return Mathf.Approximately(j.swing2Limit.limit, 0f);
+            case 0: return Mathf.Approximately(j.lowTwistLimit.limit, 0f) && Mathf.Approximately(j.highTwistLimit.limit, 0f);
+            case 1: return Mathf.Approximately(j.swing1Limit.limit, 0f);
+            case 2: return Mathf.Approximately(j.swing2Limit.limit, 0f);
             default: return true;
         }
     }
