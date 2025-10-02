@@ -1,4 +1,6 @@
 using System;
+using System.Globalization;
+using System.IO;
 using System.Net.Sockets;
 using System.Text;
 using System.Threading.Tasks;
@@ -24,9 +26,6 @@ using UnityEngine;
 
 public class SNNController : MonoBehaviour
 {
-    // Reward are received from the acceleration towards the z-axis.
-    private float previousZ = 0;
-
     // Store a rolling window of recent episode rewards.
     // A larger window smooths out noise when checking for progress.
     private int rewardsSize = 10;
@@ -40,7 +39,7 @@ public class SNNController : MonoBehaviour
 
     [Header("Network settings")]
     public string host = "127.0.0.1";
-    public int port = 9000;
+    public int port = 6969;
 
     [Header("Joint configuration")]
     // List of joints controlled by the neural network.  The size of
@@ -48,6 +47,7 @@ public class SNNController : MonoBehaviour
     // model (i.e. number of degrees of freedom).  You can assign
     // joint components here via the Inspector.
     public CharacterJoint[] joints;
+    private List<List<int>> dofPerJoint;
 
     // Rigidbody for calculating velocity.
     public Rigidbody rb;
@@ -55,6 +55,8 @@ public class SNNController : MonoBehaviour
     // Internal TCP client and stream
     private TcpClient _client;
     private NetworkStream _stream;
+    private StreamReader _reader;
+    private StreamWriter _writer;
     private byte[] _readBuffer = new byte[4096];
     private StringBuilder _recvBuilder = new StringBuilder();
 
@@ -69,6 +71,17 @@ public class SNNController : MonoBehaviour
         // Get the joints.
         joints = GetComponentsInChildren<CharacterJoint>();
 
+        // Create a list of the DoF each joint has.
+        for (int i = 0; i < joints.Length; i++)
+        {
+            int dof = 0;
+            for (int j = 0; j < 6; j++)
+            {
+                if (IsAxisLocked(joint, j)) dof++;
+            }
+            dofPerJoint[i] = dof;
+        }
+
         // For debugging.
         foreach (CharacterJoint joint in joints)
         {
@@ -81,13 +94,37 @@ public class SNNController : MonoBehaviour
             await _client.ConnectAsync(host, port);
             _stream = _client.GetStream();
             _connected = true;
+            _reader = new StreamReader(_stream);
+            _writer = new StreamWriter(_stream) { NewLine = "\n", AutoFlush = true };
             Debug.Log($"[SNNController] Connected to SNN server at {host}:{port}");
 
-            // TO-DO Retrieve simulation settings from handshake
-            // and set all variable values.
-            // rewardsSize = ...
-            // patienceMax = ...
-            // dt = ...
+            // ---- Handshake receive ----
+            string line = _reader.ReadLine();
+            if (string.IsNullOrEmpty(line))
+            {
+                Debug.LogError("[SNNController] Handshake failed: no data"); return;
+            }
+
+            try
+            {
+                string[] parts = line.Split(',');
+                if (parts.Length >= 4)
+                {
+                    // parse directly into fields
+                    this.rewardsSize = int.Parse(parts[0]);
+                    this.patienceMax = int.Parse(parts[1]);
+                    this.dt = float.Parse(parts[2], System.Globalization.CultureInfo.InvariantCulture);
+                    Debug.Log($"[SNNController] Handshake OK");
+                }
+                else
+                {
+                    Debug.LogError("[SNNController] Handshake malformed: " + line);
+                }
+            }
+            catch (System.Exception ex)
+            {
+                Debug.LogError("[SNNController] Handshake parse error: " + ex.Message);
+            }
         }
         catch (Exception ex)
         {
@@ -115,12 +152,17 @@ public class SNNController : MonoBehaviour
         {
             // TO-DO Retrieve rotation of all the axis
             // allowed to move in each joint.
+            for (int j = 0; j < dofPerJoint[i]; j++)
+            {
+                features[j] 
+            }
             features[i] = 0f;
         }
 
         // Reward is received from movement in the z-axis.
-        // The reward is the dot product of the movement in z-
-        float currentVelocity = this.gameObject.transform.forward.normalized.z;
+        // The reward is the dot product of the movement of the physics body
+        // and the z-axis base vector.
+        float currentVelocity = Vector3.Dot(rb.velocity, Vector3.forward);
         float reward = 0;
         if (rewards.Count < rewardsSize)
         {
@@ -145,44 +187,38 @@ public class SNNController : MonoBehaviour
         }
         sb.Append(reward.ToString("F6"));
         sb.Append('\n');
-        byte[] sendBytes = Encoding.ASCII.GetBytes(sb.ToString());
 
+        // Send data to SNN
         try
         {
-            // Send data to Python
-            _stream.Write(sendBytes, 0, sendBytes.Length);
+            _writer.Write(sb.ToString());
+        }
+        catch (Exception ex)
+        {
+            Debug.LogError($"[SNNController] Communication error trying to send data: {ex.Message}");
+            _connected = false;
+        }
 
-            // Read response. We accumulate data until a newline is found.
-            int bytesRead = _stream.Read(_readBuffer, 0, _readBuffer.Length);
-            if (bytesRead > 0)
+        // Receive command from SNN
+        if (_stream.DataAvailable)
+        {
+            string line = _reader.ReadLine();
+            if (!string.IsNullOrEmpty(line))
             {
-                _recvBuilder.Append(Encoding.ASCII.GetString(_readBuffer, 0, bytesRead));
-                int newlineIndex = _recvBuilder.ToString().IndexOf('\n');
-                if (newlineIndex >= 0)
+                string[] parts = line.Split(',');
+                int actionCount = Math.Min(parts.Length, joints.Length);
+                for (int i = 0; i < actionCount; i++)
                 {
-                    string line = _recvBuilder.ToString(0, newlineIndex);
-                    _recvBuilder.Remove(0, newlineIndex + 1);
-                    // Parse returned actions
-                    string[] parts = line.Split(',');
-                    int actionCount = Math.Min(parts.Length, joints.Length);
-                    for (int i = 0; i < actionCount; i++)
+                    if (float.TryParse(parts[i], NumberStyles.Float, CultureInfo.InvariantCulture, out float action))
                     {
-                        if (float.TryParse(parts[i], out float action))
-                        {
-                            ApplyActionToJoint(joints[i], action);
-                        }
+                        ApplyActionToJoint(joints[i], action);
                     }
                 }
             }
         }
-        catch (Exception ex)
-        {
-            Debug.LogError($"[SNNController] Communication error: {ex.Message}");
-            _connected = false;
-        }
 
         // Update simulation once communication is done.
-        //Physics.Simulate(dt);
+        Physics.Simulate(dt);
     }
 
     /// <summary>
@@ -194,5 +230,24 @@ public class SNNController : MonoBehaviour
     private void ApplyActionToJoint(CharacterJoint joint, float action)
     {
         // TO-DO Implement
+    }
+
+    /// <summary>
+    /// Check if axis is locked. 
+    /// </summary>
+    /// <param name="j">The joint component to check.</param>
+    /// <param name="axis">The axis to be checked.</param>
+    bool IsAxisLocked(ConfigurableJoint j, int axis)
+    {
+        switch (axis)
+        {
+            case 0: return j.angularXMotion == ConfigurableJointMotion.Locked;
+            case 1: return j.angularYMotion == ConfigurableJointMotion.Locked;
+            case 2: return j.angularZMotion == ConfigurableJointMotion.Locked;
+            case 3: return Mathf.Approximately(j.lowTwistLimit.limit, 0f) && Mathf.Approximately(j.highTwistLimit.limit, 0f);
+            case 4: return Mathf.Approximately(j.swing1Limit.limit, 0f);
+            case 5: return Mathf.Approximately(j.swing2Limit.limit, 0f);
+            default: return true;
+        }
     }
 }

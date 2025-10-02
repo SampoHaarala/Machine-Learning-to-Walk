@@ -1,0 +1,176 @@
+using System;
+using System.Net.Sockets;
+using System.Text;
+using System.Threading.Tasks;
+using UnityEngine;
+
+/*
+ * SNNController
+ *
+ * Attach this component to a GameObject in your Unity scene to
+ * control the character via a spiking neural network running in
+ * Python.  The component maintains a TCP connection to the Python
+ * server, sends observations each physics tick and applies the
+ * returned actions to the character joints.
+ *
+ * The script assumes you have a humanoid with configurable joints
+ * representing hips, knees, ankles, spine, shoulders and elbows.
+ * You must populate the `joints` array in the Inspector with the
+ * appropriate Joint components (e.g. ArticulationBody or
+ * ConfigurableJoint) in the same order as the Python model's
+ * outputs.
+ */
+
+public class SNNController : MonoBehaviour
+{
+    [Header("Network settings")]
+    public string host = "127.0.0.1";
+    public int port = 9000;
+
+    [Header("Joint configuration")]
+    // List of joints controlled by the neural network.  The size of
+    // this array should match the output dimensionality of the Python
+    // model (i.e. number of degrees of freedom).  You can assign
+    // ArticulationBody or other joint components here via the
+    // Inspector.
+    public Joint[] joints;
+
+    // Internal TCP client and stream
+    private TcpClient _client;
+    private NetworkStream _stream;
+    private byte[] _readBuffer = new byte[4096];
+    private StringBuilder _recvBuilder = new StringBuilder();
+
+    // Simulation timing
+    private bool _connected = false;
+    private float physicsSpeed = 0.02f;
+
+    async void Start()
+    {
+        // Stop automatic simulation. This way simulation speed can be customised.
+        Physics.autoSimulation = false;
+        // Connect to the Python server asynchronously
+        try
+        {
+            _client = new TcpClient();
+            await _client.ConnectAsync(host, port);
+            _stream = _client.GetStream();
+            _connected = true;
+            Debug.Log($"[SNNController] Connected to SNN server at {host}:{port}");
+        }
+        catch (Exception ex)
+        {
+            Debug.LogError($"[SNNController] Could not connect to SNN server: {ex.Message}");
+        }
+    }
+
+    void OnDestroy()
+    {
+        // Clean up the connection when the object is destroyed
+        if (_stream != null)
+            _stream.Close();
+        if (_client != null)
+            _client.Close();
+    }
+
+    void FixedUpdate()
+    {
+        if (!_connected || joints == null || joints.Length == 0)
+            return;
+
+        // Gather observations from the character.  In a real
+        // implementation you would collect proprioceptive data such
+        // as joint angles, velocities, base orientation and contact
+        // states.  Here we provide a placeholder of zeros for
+        // demonstration.  Adjust the size to match your Python
+        // model's expected input dimensionality.
+        float[] observation = new float[/*TODO: set to input size*/ 21];
+        for (int i = 0; i < observation.Length; i++)
+        {
+            observation[i] = 0f;
+        }
+
+        // Compute reward in Unity if desired.  Reward should reflect
+        // progress towards the goal (e.g. forward velocity).  You can
+        // send the reward as the last element of the message.  Here we
+        // set reward to zero to illustrate the protocol.
+        float reward = 0f;
+
+        // Encode observations and reward into a comma‑separated string
+        // terminated by a newline.  The Python server will parse this
+        // message into floats.  If you include reward, ensure the
+        // Python side knows to expect it.
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < observation.Length; i++)
+        {
+            sb.Append(observation[i].ToString("F6"));
+            sb.Append(',');
+        }
+        sb.Append(reward.ToString("F6"));
+        sb.Append('\n');
+        byte[] sendBytes = Encoding.ASCII.GetBytes(sb.ToString());
+
+        try
+        {
+            // Send data to Python
+            _stream.Write(sendBytes, 0, sendBytes.Length);
+
+            // Read response (assumes server replies with one line per
+            // request).  We accumulate data until a newline is found.
+            int bytesRead = _stream.Read(_readBuffer, 0, _readBuffer.Length);
+            if (bytesRead > 0)
+            {
+                _recvBuilder.Append(Encoding.ASCII.GetString(_readBuffer, 0, bytesRead));
+                int newlineIndex = _recvBuilder.ToString().IndexOf('\n');
+                if (newlineIndex >= 0)
+                {
+                    string line = _recvBuilder.ToString(0, newlineIndex);
+                    _recvBuilder.Remove(0, newlineIndex + 1);
+                    // Parse returned actions
+                    string[] parts = line.Split(',');
+                    int actionCount = Math.Min(parts.Length, joints.Length);
+                    for (int i = 0; i < actionCount; i++)
+                    {
+                        if (float.TryParse(parts[i], out float action))
+                        {
+                            ApplyActionToJoint(joints[i], action);
+                        }
+                    }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Debug.LogError($"[SNNController] Communication error: {ex.Message}");
+            _connected = false;
+        }
+
+        // Update simulation once communication is done.
+        Physics.Simulate(physicsSpeed);
+    }
+
+    /// <summary>
+    /// Apply a scalar action value to a joint.  This method
+    /// demonstrates how to set joint motor targets based on the
+    /// network's output.  Modify this to match your specific joint
+    /// components (e.g. ArticulationBody, HingeJoint).
+    /// </summary>
+    /// <param name="joint">The joint component to control.</param>
+    /// <param name="action">The network's output for this joint, typically in [-1, 1].</param>
+    private void ApplyActionToJoint(Joint joint, float action)
+    {
+        // Example: if using a HingeJoint, set the motor's target velocity
+        var hinge = joint as HingeJoint;
+        if (hinge != null)
+        {
+            JointMotor motor = hinge.motor;
+            // Scale the action to an appropriate velocity range
+            float maxSpeed = 5f;  // adjust per joint
+            motor.targetVelocity = Mathf.Clamp(action, -1f, 1f) * maxSpeed;
+            motor.force = 100f;  // adjust torque strength
+            hinge.motor = motor;
+            hinge.useMotor = true;
+        }
+        // TODO: add support for ArticulationBody or other joint types
+    }
+}
