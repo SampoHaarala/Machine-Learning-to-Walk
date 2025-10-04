@@ -1,6 +1,7 @@
 using System;
 using System.Globalization;
 using System.IO;
+using System.Net;
 using System.Net.Sockets;
 using System.Text;
 using System.Threading.Tasks;
@@ -28,18 +29,20 @@ public class SNNController : MonoBehaviour
 {
     // Store a rolling window of recent episode rewards.
     // A larger window smooths out noise when checking for progress.
-    private int rewardsSize = 10;
+    private int rewardsSize = 2;
     private Queue<float> rewards = new Queue<float>();
 
     // Track how many consecutive checks show no meaningful improvement.
     // If this counter exceeds patienceMax, we treat it as a plateau
     // and increase exploration noise to escape it.
+    [SerializeField]
     private int patienceMax = 10;
+    [SerializeField]
     private int patience = 0;
 
     [Header("Network settings")]
     public string host = "127.0.0.1";
-    public int port = 6969;
+    public int port = 6900;
 
     [Header("Joint configuration")]
     // List of joints controlled by the neural network.  The size of
@@ -52,6 +55,8 @@ public class SNNController : MonoBehaviour
     public Rigidbody rb;
 
     // Internal TCP client and stream
+    [Header("Variables")]
+    [SerializeField]
     private TcpClient _client;
     private NetworkStream _stream;
     private StreamReader _reader;
@@ -61,25 +66,27 @@ public class SNNController : MonoBehaviour
 
     // Simulation timing
     private bool _connected = false;
+    [SerializeField]
     private float dt = 0.02f;
+    [SerializeField]
+    private float accumaletedTime = 0;
 
-    async void Start()
+    async void Awake()
     {
         // Stop automatic simulation. This way simulation speed can be customised.
-        //Physics.autoSimulation = false;
-        // Get the joints.
-        joints = GetComponentsInChildren<CharacterJoint>();
+        Physics.autoSimulation = false;
+        Application.runInBackground = true;
 
         // For debugging.
-        foreach (CharacterJoint joint in joints)
-        {
-            Debug.Log("Found joint: " + joint.name);
-        }
+        foreach (CharacterJoint joint in joints) Debug.Log("Found joint: " + joint.name);
         // Connect to the Python server asynchronously
         try
         {
-            _client = new TcpClient();
-            await _client.ConnectAsync(host, port);
+            _client = new TcpClient(AddressFamily.InterNetwork);
+            var connectTask = _client.ConnectAsync(IPAddress.Loopback, port);
+            // Attempt to make connection.
+            if (await Task.WhenAny(connectTask, Task.Delay(3000)) != connectTask || !_client.Connected)
+                throw new TimeoutException($"Connect to {host}:{port} timed out");
             _stream = _client.GetStream();
             _connected = true;
             _reader = new StreamReader(_stream);
@@ -96,12 +103,12 @@ public class SNNController : MonoBehaviour
             try
             {
                 string[] parts = line.Split(',');
-                if (parts.Length >= 4)
+                if (parts.Length >= 3)
                 {
                     // parse directly into fields
-                    this.rewardsSize = int.Parse(parts[0]);
-                    this.patienceMax = int.Parse(parts[1]);
-                    this.dt = float.Parse(parts[2], System.Globalization.CultureInfo.InvariantCulture);
+                    rewardsSize = int.Parse(parts[0]);
+                    patienceMax = int.Parse(parts[1]);
+                    dt = float.Parse(parts[2], System.Globalization.CultureInfo.InvariantCulture) / 100;
                     Debug.Log($"[SNNController] Handshake OK");
                 }
                 else
@@ -118,6 +125,8 @@ public class SNNController : MonoBehaviour
         {
             Debug.LogError($"[SNNController] Could not connect to SNN server: {ex.Message}");
         }
+
+        Physics.Simulate(dt);
     }
 
     void OnDestroy()
@@ -129,28 +138,32 @@ public class SNNController : MonoBehaviour
             _client.Close();
     }
 
-    void FixedUpdate()
+    void Update()
     {
+        // Acculamete real time
+        accumaletedTime += Time.unscaledDeltaTime;
+
         if (!_connected || joints == null || joints.Length == 0)
             return;
 
         // Get all features from the simulation.
         float[] features = new float[21];
-        for (int i = 0; i < features.Length; i++)
+        for (int i = 3; i < features.Length; i++)
         {
             // Get all angular velocity data of the joint.
-            Vector3 wLocal = cj.transform.InverseTransformDirection(rb.angularVelocity) * Mathf.Rad2Deg;
-            if (IsAxisLocked(0))
+            Rigidbody jrb = joints[i].GetComponent<Rigidbody>();
+            Vector3 wLocal = joints[i].transform.InverseTransformDirection(jrb.angularVelocity) * Mathf.Rad2Deg;
+            if (IsAxisLocked(joints[i], 0))
             {
                 features[i] = wLocal.x;
                 i++;
             }
-            if (IsAxisLocked(1))
+            if (IsAxisLocked(joints[i], 1))
             {
                 features[i] = wLocal.y;
                 i++;
             }
-            if (IsAxisLocked(2))
+            if (IsAxisLocked(joints[i], 2))
             {
                 features[i] = wLocal.z;
             }
@@ -184,11 +197,13 @@ public class SNNController : MonoBehaviour
         }
         sb.Append(reward.ToString("F6"));
         sb.Append('\n');
+        Debug.Log(sb);
 
         // Send data to SNN
         try
         {
             _writer.Write(sb.ToString());
+            Debug.Log("Sent features to SNN: " + sb.ToString());
         }
         catch (Exception ex)
         {
@@ -202,14 +217,30 @@ public class SNNController : MonoBehaviour
             string line = _reader.ReadLine();
             if (!string.IsNullOrEmpty(line))
             {
+                Debug.Log("Received " + line);
                 string[] parts = line.Split(',');
                 int actionCount = Math.Min(parts.Length, joints.Length);
-                for (int i = 0; i < actionCount; i++)
+                int j = 0;
+                for (int i = 0; i + j < actionCount; i++)
                 {
-                    if (float.TryParse(parts[i], NumberStyles.Float, CultureInfo.InvariantCulture, out float action))
+                    Vector3 force = new Vector3();
+                    float action = 0;
+                    if (IsAxisLocked(joints[i], 0) && float.TryParse(parts[i + j], NumberStyles.Float, CultureInfo.InvariantCulture, out action))
                     {
-                        ApplyActionToJoint(joints[i], action);
+                        force.x = action;
+                        j++;
                     }
+                    if (IsAxisLocked(joints[i], 1) && float.TryParse(parts[i + j], NumberStyles.Float, CultureInfo.InvariantCulture, out action) && i + j < actionCount)
+                    {
+                        force.y = action;
+                        j++;
+                    }
+                    if (IsAxisLocked(joints[i], 2) && float.TryParse(parts[i + j], NumberStyles.Float, CultureInfo.InvariantCulture, out action) && i + j < actionCount)
+                    {
+                        force.z = action;
+                        j++;
+                    }
+                    ApplyForceToJoint(joints[i], force);
                 }
             }
         }
@@ -224,9 +255,11 @@ public class SNNController : MonoBehaviour
     /// </summary>
     /// <param name="joint">The joint component to control.</param>
     /// <param name="action">The network's output for this joint, typically in [-1, 1].</param>
-    private void ApplyActionToJoint(CharacterJoint joint, float action)
+    private void ApplyForceToJoint(CharacterJoint joint, Vector3 force)
     {
         // TO-DO Implement
+        Rigidbody jrb = joint.GetComponent<Rigidbody>();
+        jrb.angularVelocity = force;
     }
 
     /// <summary>
@@ -234,7 +267,7 @@ public class SNNController : MonoBehaviour
     /// </summary>
     /// <param name="j">The joint component to check.</param>
     /// <param name="axis">The axis to be checked.</param>
-    bool IsAxisLocked(ConfigurableJoint j, int axis)
+    bool IsAxisLocked(CharacterJoint j, int axis)
     {
         switch (axis)
         {

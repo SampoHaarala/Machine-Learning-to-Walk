@@ -49,7 +49,7 @@ class UnityCommunicationServer:
     ````
     """
 
-    def __init__(self, dt, rewards_size, patience_max, host: str = "127.0.0.1", port: int = 9000, backlog: int = 1) -> None:
+    def __init__(self, dt, rewards_size, patience_max, host: str = "127.0.0.1", port: int = 6900, backlog: int = 1) -> None:
         self.dt = dt
         self.rewards_size = rewards_size
         self.patience_max = patience_max

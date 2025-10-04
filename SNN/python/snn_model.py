@@ -36,42 +36,66 @@ class SpikingNetwork:
         # ====== Build network ======
         self.N_in  = self.OBS_SIZE - 1         # last obs element is reward (RPE baseline on Python)
         self.N_h   = N_h                       # tweak as needed (200–800 for CPU real-time)
-        self.N_c   = N_c                       # second layer to mimick brain structure: motor cortex + input -> cerebellum -> added to output
+        self.N_c   = N_c                       # second layer to mimic brain structure: motor cortex + input -> cerebellum -> added to output
         self.N_out = self.ACTION_SIZE * 3      # each action takes input from three neurons for stability
-    
-        # LIF (input/hidden/output)
-        self.tau_m    = 20*ms   # membrane time constant (how quickly voltage leaks back to rest)
-        self.tau_c_m  = 10*ms   # cerebellum membrane time constant (shorter = faster response)
-        self.v_rest   = 0.0     # resting membrane potential (baseline voltage when no input)
-        self.v_th     = 1.0     # spike threshold (voltage level that triggers a spike)
-        self.v_reset  = 0.0     # reset potential (voltage after a spike fires)
-        self.refrac   = 2*ms    # absolute refractory period (time neuron cannot spike again)
-    
+
+        # ====== LIF (input/hidden/output) ======
+        # Membrane dynamics constants
+        self.tau_m   = 20 * ms   # membrane time constant (how quickly voltage leaks back to rest)
+        self.v_rest  = 0.0       # resting membrane potential (baseline voltage when no input)
+        self.v_th    = 1.0       # spike threshold (voltage level that triggers a spike)
+        self.v_reset = 0.0       # reset potential (voltage after a spike fires)
+        self.refrac  = 2 * ms    # absolute refractory period (time neuron cannot spike again)
+
         # LIF dynamics: v decays toward v_rest with time constant tau_m,
         # but increases with input current I. Integration stops during refractory.
-        self.eqs      = f"""
-        dv/dt = (-(v - {self.v_rest}) + I)/{self.tau_m} : 1 (unless refractory)
+        self.eqs = """
+        dv/dt = (-(v - v_rest) + I)/tau_m : 1 (unless refractory)
         I : 1
+        v_rest : 1
+        tau_m : second
+        """
+
+        # ====== AdEx-like (cerebellum) ======
+        # Adaptation dynamics parameters
+        self.tau_c_m  = 10 * ms   # cerebellum membrane time constant (shorter = faster response)
+        self.v_t      = 0.5       # spike initiation threshold (where exponential term kicks in)
+        self.deltaT   = 0.05      # slope factor (sharpness of spike onset; smaller = sharper)
+        self.a        = 0.01      # subthreshold adaptation strength (how much w builds during depolarization)
+        self.tau_w    = 200 * ms  # adaptation time constant (how quickly w decays back to 0)
+        self.refrac_c = 1 * ms    # separate refractory for the cerebellum layer
+
+        # AdEx dynamics
+        self.eqs_c = """
+        dv/dt = (-(v - v_rest) + deltaT*exp((v - v_t)/deltaT) - w + I)/tau_c_m : 1 (unless refractory)
+        dw/dt = (a*(v - v_rest) - w)/tau_w : 1
+        I : 1
+        v_rest : 1
+        v_t : 1
+        deltaT : 1
+        a : 1
+        tau_c_m : second
+        tau_w : second
         """
     
-        # AdEx-like (cerebellum)
-        self.v_t      = 0.5      # spike initiation threshold (where exponential term kicks in)
-        self.deltaT   = 0.05     # slope factor (controls sharpness of spike onset; smaller = sharper)
-        self.a        = 0.01     # subthreshold adaptation strength (how much w builds during depolarization)
-        self.tau_w    = 200*ms   # adaptation time constant (how quickly w decays back to 0)
-        self.refrac_c = 1*ms     # seperate parameters for the cerebellum layer
-        self.eqs_c    = f"""
-                        dv/dt = (-(v - {self.v_rest}) + {self.deltaT}*exp((v - {self.v_t})/{self.deltaT}) - w + I)/{self.tau_c_m} : 1 (unless refractory)
-                        dw/dt = ({self.a}*(v - {self.v_rest}) - w)/{self.tau_w} : 1
-                        I     : 1
-                        w     : 1
-                        """
-    
 
-        self.G_in  = NeuronGroup(self.N_in,  self.eqs,threshold=f'v>{self.v_th}', reset=f'v={self.v_reset}',refractory=self.refrac, method='euler', name='G_in')
-        self.G_h   = NeuronGroup(self.N_h,   self.eqs,threshold=f'v>{self.v_th}', reset=f'v={self.v_reset}',refractory=self.refrac, method='euler', name='G_h')
-        self.G_c   = NeuronGroup(self.N_c,   self.eqs_c,threshold=f'v>{self.v_th}', reset=f'v={self.v_reset}',refractory=self.refrac_c, method='euler', name='G_c')
+        self.G_in  = NeuronGroup(self.N_in, self.eqs,threshold=f'v>{self.v_th}', reset=f'v={self.v_reset}',refractory=self.refrac, method='euler', name='G_in')
+        self.G_h   = NeuronGroup(self.N_h, self.eqs,threshold=f'v>{self.v_th}', reset=f'v={self.v_reset}',refractory=self.refrac, method='euler', name='G_h')
+        self.G_c   = NeuronGroup(self.N_c, self.eqs_c,threshold=f'v>{self.v_th}', reset=f'v={self.v_reset}',refractory=self.refrac_c, method='euler', name='G_c')
         self.G_out = NeuronGroup(self.N_out, self.eqs,threshold=f'v>{self.v_th}', reset=f'v={self.v_reset}',refractory=self.refrac, method='euler', name='G_out')
+
+        # brian2 doesn't handle "ms" inside f-strings well so parameters need to be defined outside.
+        # ====== Assign parameters to groups ======
+        for g in [self.G_in, self.G_h, self.G_out]:
+            g.v_rest = self.v_rest
+            g.tau_m  = self.tau_m
+
+        self.G_c.v_rest  = self.v_rest
+        self.G_c.tau_c_m = self.tau_c_m
+        self.G_c.v_t     = self.v_t
+        self.G_c.deltaT  = self.deltaT
+        self.G_c.a       = self.a
+        self.G_c.tau_w   = self.tau_w
     
         # Random input projection and recurrent/forward connections
         self.rng = np.random.default_rng(42)
@@ -80,34 +104,76 @@ class SpikingNetwork:
             return (rng.normal(0.0, 1.0, size=shape) / np.sqrt(shape[0])) * scale
 
         # Connections for the hidden layer
-        self.Sinh  = Synapses(self.G_in,  self.G_h,  model='w:1', on_pre='v_post += w', name='Sinh')
-        self.Shh  = Synapses(self.G_h,   self.G_h,  model='w:1', on_pre='v_post += w', name='Shh')
-        self.Shout= Synapses(self.G_h,   self.G_out, model=(
-            'w:1\n'
-            'e:1'      # eligibility trace for R-STDP (decays in run_regularly)
-        ), on_pre='v_post += w; e += 0.01', on_post='e -= 0.01', name='Shout')
-        # Note: e increments are a simple pair-based surrogate (A+/-) for eligibility.
+        self.Sinh  = Synapses(self.G_in, self.G_h, model='w_syn:1', on_pre='v_post += w_syn', name='Sinh')
+        self.Shh  = Synapses(self.G_h, self.G_h, model='w_syn:1', on_pre='v_post += w_syn', name='Shh')
+        self.Shout= Synapses(self.G_h, self.G_out, model=( # Different parameters need to be defined on seperate lines for brian2
+                                                         'w_syn:1\n'
+                                                         'elig:1'      # eligibility trace for R-STDP (decays in run_regularly)
+                                                         ), on_pre=('v_post += w_syn\n'
+                                                                   'elig += 0.01'
+                                                                   ), on_post='elig -= 0.01', name='Shout')
+        # Note: e increments are a simple pair-based surrogate (A+/-) for eligibility
 
-        # Copying the brain event of efference copy.
-        # In the brain it helps with predicting consequences of actions.
-        self.South = Synapses(self.G_out, self.G_h, model='w:1', on_pre='v_post += w', name='Shout')
+        # Copying the brain event of efference copy
+        # In the brain it helps with predicting consequences of actions
+        self.South = Synapses(self.G_out, self.G_h, model='w_syn:1', on_pre='v_post += w_syn', name='Shout')
 
         # Connections for the cerebellum
-        self.Sinc = Synapses(self.G_in, self.G_c, model='w:1; xi:1',on_pre='v_post += w; xi += 0.01', name='Sinc')
-        self.Shc  = Synapses(self.G_h,  self.G_c, model='w:1',on_pre='v_post += w', name='Shc')
+        self.Sinc = Synapses(self.G_in, self.G_c, model=(
+                                                        'w_syn:1\n'
+                                                        'elig:1'
+                                                        ),on_pre=(
+                                                                 'v_post += w_syn\n' 
+                                                                 'elig += 0.01'
+                                                                 ), name='Sinc')
+        self.Shc  = Synapses(self.G_h,  self.G_c, model='w_syn:1',on_pre='v_post += w_syn', name='Shc')
         self.Scout= Synapses(self.G_c,  self.G_out, model=(
-            'w:1\n'
-            'e:1'
-        ), on_pre='v_post -= w; e += 0.01', on_post='e -= 0.01', name='Scout')
+                                                          'w_syn:1\n'
+                                                          'elig:1'
+                                                          ), on_pre=(
+                                                                    'v_post -= w_syn\n'
+                                                                    'elig += 0.01'
+                                                                    ), on_post='elig -= 0.01', name='Scout')
 
-        self.Scout.connect(p=0.2)
-        self.Shc.connect(p=0.2)
-        self.Shc.w = '0.1*rand()'
-        self.Sinh.connect(p=0.3); self.Shh.connect(p=0.05); self.Shout.connect(p=0.4)
-        self.Sinh.w[:]   = rand_w(self.Sinh.w.shape, 0.5)
-        self.Shh.w[:]    = rand_w(self.Shh.w.shape, 0.2)
-        self.Shout.w[:]  = rand_w(self.Shout.w.shape, 0.3)
+        # ---------- Connectivity ----------
+        # Feedforward & cerebellar projections
+        self.Sinc.connect(p=0.20)                                # in  → cerebellum
+        self.Shc.connect(p=0.10)                                 # hid → cerebellum
+        self.Scout.connect(p=0.30)                               # cer → out
 
+        # Cortex path
+        self.Sinh.connect(p=0.30)                                # in  → hid
+        self.Shh.connect(p=0.05, condition='i!=j')               # hid → hid (no self loops)
+        self.Shout.connect(p=0.40)                               # hid → out
+
+        # Delays to the spikes are added to keep the network stable
+        self.Sinh.delay  = '1*ms + 2*ms*rand()'
+        self.Shh.delay   = '1*ms + 2*ms*rand()'
+        self.Shout.delay = '1*ms + 2*ms*rand()'
+        self.Sinc.delay  = '1*ms + 2*ms*rand()'
+        self.Shc.delay   = '1*ms + 2*ms*rand()'
+        self.Scout.delay = '1*ms + 2*ms*rand()'
+
+        # ---------- Initial weights ----------
+        # in → hid (mixed sign; moderate drive)
+        self.Sinh.w_syn  = '0.6 * randn() / sqrt(N_pre)'
+        
+        # hid → hid (recurrent very small for stability)
+        self.Shh.w_syn   = '0.1 * randn() / sqrt(N_pre)'
+        
+        # hid → out (mixed sign; trainable readout)
+        self.Shout.w_syn = '0.3 * randn() / sqrt(N_pre)'
+        
+        # in → cerebellum (small)
+        self.Sinc.w_syn  = '0.4 * randn() / sqrt(N_pre)'
+        
+        # hid → cerebellum (keep weak and mostly excitatory at start)
+        self.Shc.w_syn   = '0.05 * randn() / sqrt(N_pre)'
+        
+        # cerebellum → out (initialize as NON-NEGATIVE since Scout is inhibitory and negative weights would be excitatory)
+        self.Scout.w_syn = 'abs(0.08 * randn() / sqrt(N_pre))'
+
+        # ---------- Reward and error ----------
         # Reward-modulated plasticity parameters (names in namespace for live update)
         self.wmin, self.wmax = -1.5, 1.5
         self.delta_rpe = 0.0      # will be updated each step from Unity reward - baseline
@@ -115,21 +181,24 @@ class SpikingNetwork:
         # Eligibility decay + reward-modulated weight update each dt
         self.Shout.run_regularly(
             f"""
-            e *= exp(-dt/{self.tau_e})
-            w += {self.eta_r} * delta * e
-            w = clip(w, {self.wmin}, {self.wmax})
+            elig *= exp(-dt/{self.tau_e})
+            w_syn += {self.eta_r} * delta * elig
+            w_syn = clip(w_syn, {self.wmin}, {self.wmax})
             """,
-            dt=self.dt, namespace={'delta': 0.0}
+            dt=self.dt
         )
+        self.Shout.namespace = {'delta': 0.0}
+
         # Eligibility decay + error signal update each dt
         self.Scout.run_regularly(
             f"""
-            e *= exp(-dt/{self.tau_e})
-            w += {self.eta_e} * gamma * e
-            w = clip(w, {self.wmin}, {self.wmax})
+            elig *= exp(-dt/{self.tau_e})
+            w_syn += {self.eta_e} * gamma * elig
+            w_syn = clip(w_syn, {self.wmin}, {self.wmax})
             """,
-            dt=self.dt, namespace={'gamma': 0.0}
+            dt=self.dt
         )
+        self.Scout.namespace = {'gamma': 0.0}
 
         # Monitors for output spikes
         self.M_out = SpikeMonitor(self.G_out, name='M_out')
@@ -199,4 +268,4 @@ class SpikingNetwork:
         return self.decode_actions().tolist()
     
     def get_weights(self):
-        return [self.Sinh.w[:], self.Shh.w[:], self.Shout.w[:], self.Sinc.w[:], self.Scout.w[:]]
+        return [self.Sinh.w_syn[:], self.Shh.w_syn[:], self.Shout.w_syn[:], self.Sinc.w_syn[:], self.Scout.w_syn[:]]
