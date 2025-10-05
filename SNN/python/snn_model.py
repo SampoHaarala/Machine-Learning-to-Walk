@@ -16,25 +16,25 @@ from brian2 import (ms, second, NeuronGroup, Synapses, Network, defaultclock,
 
 class SpikingNetwork:
 
-    def __init__(self, host: str = "127.0.0.1", port: int = 9999, N_h: int = 300,
+    def __init__(self, host: str = "127.0.0.1", port: int = 9999, input_size: int = 18, N_h: int = 300,
                  N_c: int = 100) -> None:
         # ---------- User parameters ----------
         self.HOST = host
         self.PORT = port
 
-        self.OBS_SIZE    = 23       # e.g., 21 features + reward + error → we’ll read reward separately
-        self.ACTION_SIZE = 21       # one action per DoF
-        self.dt          = 20*ms    # controls the speed of the simulation.
-        self.eta_r       = 0.005    # learning rate for reward-modulated plasticity
-        self.eta_e       = 0.003    # learning rate for error-modulated plasticity
-        self.tau_e       = 200*ms   # eligibility decay
+        self.OBS_SIZE    = input_size # e.g., 16 features + reward + error → we’ll read reward separately
+        self.ACTION_SIZE = input_size         # one action per DoF
+        self.dt          = 20*ms      # controls the speed of the simulation.
+        self.eta_r       = 0.0020     # learning rate for reward-modulated plasticity
+        self.eta_e       = 0.0010     # learning rate for error-modulated plasticity
+        self.tau_e       = 200*ms     # eligibility decay
         # ------------------------------------
     
         # Brian performance hint
         prefs.codegen.target = "numpy"
     
         # ====== Build network ======
-        self.N_in  = self.OBS_SIZE - 1         # last obs element is reward (RPE baseline on Python)
+        self.N_in  = (self.OBS_SIZE - 2) * 3         # last obs element is reward (RPE baseline on Python)
         self.N_h   = N_h                       # tweak as needed (200–800 for CPU real-time)
         self.N_c   = N_c                       # second layer to mimic brain structure: motor cortex + input -> cerebellum -> added to output
         self.N_out = self.ACTION_SIZE * 3      # each action takes input from three neurons for stability
@@ -43,7 +43,7 @@ class SpikingNetwork:
         # Membrane dynamics constants
         self.tau_m   = 20 * ms   # membrane time constant (how quickly voltage leaks back to rest)
         self.v_rest  = 0.0       # resting membrane potential (baseline voltage when no input)
-        self.v_th    = 1.0       # spike threshold (voltage level that triggers a spike)
+        self.v_th    = 0.50      # spike threshold (voltage level that triggers a spike)
         self.v_reset = 0.0       # reset potential (voltage after a spike fires)
         self.refrac  = 2 * ms    # absolute refractory period (time neuron cannot spike again)
 
@@ -59,7 +59,7 @@ class SpikingNetwork:
         # ====== AdEx-like (cerebellum) ======
         # Adaptation dynamics parameters
         self.tau_c_m  = 10 * ms   # cerebellum membrane time constant (shorter = faster response)
-        self.v_t      = 0.5       # spike initiation threshold (where exponential term kicks in)
+        self.v_th_c   = 0.35      # spike initiation threshold (where exponential term kicks in)
         self.deltaT   = 0.05      # slope factor (sharpness of spike onset; smaller = sharper)
         self.a        = 0.01      # subthreshold adaptation strength (how much w builds during depolarization)
         self.tau_w    = 200 * ms  # adaptation time constant (how quickly w decays back to 0)
@@ -81,7 +81,7 @@ class SpikingNetwork:
 
         self.G_in  = NeuronGroup(self.N_in, self.eqs,threshold=f'v>{self.v_th}', reset=f'v={self.v_reset}',refractory=self.refrac, method='euler', name='G_in')
         self.G_h   = NeuronGroup(self.N_h, self.eqs,threshold=f'v>{self.v_th}', reset=f'v={self.v_reset}',refractory=self.refrac, method='euler', name='G_h')
-        self.G_c   = NeuronGroup(self.N_c, self.eqs_c,threshold=f'v>{self.v_th}', reset=f'v={self.v_reset}',refractory=self.refrac_c, method='euler', name='G_c')
+        self.G_c   = NeuronGroup(self.N_c, self.eqs_c,threshold=f'v>{self.v_th_c}', reset=f'v={self.v_reset}',refractory=self.refrac_c, method='euler', name='G_c')
         self.G_out = NeuronGroup(self.N_out, self.eqs,threshold=f'v>{self.v_th}', reset=f'v={self.v_reset}',refractory=self.refrac, method='euler', name='G_out')
 
         # brian2 doesn't handle "ms" inside f-strings well so parameters need to be defined outside.
@@ -92,16 +92,10 @@ class SpikingNetwork:
 
         self.G_c.v_rest  = self.v_rest
         self.G_c.tau_c_m = self.tau_c_m
-        self.G_c.v_t     = self.v_t
+        self.G_c.v_t     = self.v_th_c
         self.G_c.deltaT  = self.deltaT
         self.G_c.a       = self.a
         self.G_c.tau_w   = self.tau_w
-    
-        # Random input projection and recurrent/forward connections
-        self.rng = np.random.default_rng(42)
-            # Dense random weights, scaled
-        def rand_w(shape, scale):
-            return (rng.normal(0.0, 1.0, size=shape) / np.sqrt(shape[0])) * scale
 
         # Connections for the hidden layer
         self.Sinh  = Synapses(self.G_in, self.G_h, model='w_syn:1', on_pre='v_post += w_syn', name='Sinh')
@@ -116,18 +110,18 @@ class SpikingNetwork:
 
         # Copying the brain event of efference copy
         # In the brain it helps with predicting consequences of actions
-        self.South = Synapses(self.G_out, self.G_h, model='w_syn:1', on_pre='v_post += w_syn', name='Shout')
+        self.South = Synapses(self.G_out, self.G_h, model='w_syn:1', on_pre='v_post += w_syn', name='South')
 
         # Connections for the cerebellum
-        self.Sinc = Synapses(self.G_in, self.G_c, model=(
+        self.Sinc  = Synapses(self.G_in, self.G_c, model=(
                                                         'w_syn:1\n'
                                                         'elig:1'
                                                         ),on_pre=(
                                                                  'v_post += w_syn\n' 
                                                                  'elig += 0.01'
                                                                  ), name='Sinc')
-        self.Shc  = Synapses(self.G_h,  self.G_c, model='w_syn:1',on_pre='v_post += w_syn', name='Shc')
-        self.Scout= Synapses(self.G_c,  self.G_out, model=(
+        self.Shc   = Synapses(self.G_h,  self.G_c, model='w_syn:1',on_pre='v_post += w_syn', name='Shc')
+        self.Scout = Synapses(self.G_c,  self.G_out, model=(
                                                           'w_syn:1\n'
                                                           'elig:1'
                                                           ), on_pre=(
@@ -138,12 +132,12 @@ class SpikingNetwork:
         # ---------- Connectivity ----------
         # Feedforward & cerebellar projections
         self.Sinc.connect(p=0.20)                                # in  → cerebellum
-        self.Shc.connect(p=0.10)                                 # hid → cerebellum
-        self.Scout.connect(p=0.30)                               # cer → out
+        self.Shc.connect(p=0.05)                                 # hid → cerebellum
+        self.Scout.connect(p=0.10)                               # cer → out
 
         # Cortex path
-        self.Sinh.connect(p=0.30)                                # in  → hid
-        self.Shh.connect(p=0.05, condition='i!=j')               # hid → hid (no self loops)
+        self.Sinh.connect(p=0.20)                                # in  → hid
+        self.Shh.connect(p=0.20, condition='i!=j')               # hid → hid (no self loops)
         self.Shout.connect(p=0.40)                               # hid → out
 
         # Delays to the spikes are added to keep the network stable
@@ -162,7 +156,7 @@ class SpikingNetwork:
         self.Shh.w_syn   = '0.1 * randn() / sqrt(N_pre)'
         
         # hid → out (mixed sign; trainable readout)
-        self.Shout.w_syn = '0.3 * randn() / sqrt(N_pre)'
+        self.Shout.w_syn = '0.5 * randn() / sqrt(N_pre)'
         
         # in → cerebellum (small)
         self.Sinc.w_syn  = '0.4 * randn() / sqrt(N_pre)'
@@ -174,38 +168,53 @@ class SpikingNetwork:
         self.Scout.w_syn = 'abs(0.08 * randn() / sqrt(N_pre))'
 
         # ---------- Reward and error ----------
-        # Reward-modulated plasticity parameters (names in namespace for live update)
-        self.wmin, self.wmax = -1.5, 1.5
+        # Reward-modulated plasticity parameters
+        self.wmin_r, self.wmax_r = -1.5, 1.5
         self.delta_rpe = 0.0      # will be updated each step from Unity reward - baseline
 
         # Eligibility decay + reward-modulated weight update each dt
+        self.Shout.namespace.update({
+            'delta': 0.0,
+            'tau_e': self.tau_e,
+            'eta_r': self.eta_r,
+            'wmin_r': self.wmin_r,
+            'wmax_r': self.wmax_r,
+        })
         self.Shout.run_regularly(
             f"""
-            elig *= exp(-dt/{self.tau_e})
-            w_syn += {self.eta_r} * delta * elig
-            w_syn = clip(w_syn, {self.wmin}, {self.wmax})
+            elig *= exp(-dt/tau_e)
+            w_syn += eta_r * delta * elig
+            w_syn = clip(w_syn, wmin_r, wmax_r)
             """,
             dt=self.dt
         )
-        self.Shout.namespace = {'delta': 0.0}
+
+        # Error-modulated plasticity parameters
+        self.wmin_e, self.wmax_e = -1, 1 
 
         # Eligibility decay + error signal update each dt
+        self.Scout.namespace.update({
+            'gamma': 0.0,
+            'tau_e': self.tau_e,
+            'eta_e': self.eta_e,
+            'wmin_e': self.wmin_e,
+            'wmax_e': self.wmax_e,
+        })
         self.Scout.run_regularly(
-            f"""
-            elig *= exp(-dt/{self.tau_e})
-            w_syn += {self.eta_e} * gamma * elig
-            w_syn = clip(w_syn, {self.wmin}, {self.wmax})
+            """
+            elig *= exp(-dt/tau_e)
+            w_syn += eta_e * gamma * elig
+            w_syn = clip(w_syn, wmin_e, wmax_e)
             """,
             dt=self.dt
         )
-        self.Scout.namespace = {'gamma': 0.0}
 
         # Monitors for output spikes
         self.M_out = SpikeMonitor(self.G_out, name='M_out')
 
         # Compose network explicitly so we can call net.run(dt)
         self.net = Network(self.G_in, self.G_h, self.G_c, self.G_out, self.Sinh, self.Shh, self.Sinc, self.Shc, self.Scout, self.Shout, self.M_out)
-        defaultclock.dt = self.dt
+        defaultclock.dt = 1*ms
 
         # ====== Readout: EMA firing rate → continuous actions ======
         self.rate_ema = np.zeros(self.N_out, dtype=np.float32)
@@ -215,22 +224,21 @@ class SpikingNetwork:
 
         # ====== Baseline for RPE ======
         self.baseline_r = 0.0
-        self.bl_alpha_r = 0.01
+        self.bl_alpha_r = 0.05  # Learning speed
 
         # ====== Baseline for error ======
         self.baseline_e = 0.0
-        self.bl_alpha_e = 0.01
+        self.bl_alpha_e = 0.10 # Learning speed for cerebellum
 
     def decode_actions(self):
         """Compute actions in [-1,1] from output spike counts in the last tick."""
-        counts = self.M_out.count[:]      # total spikes since start
-        spk = counts - self.prev_counts   # spikes in this tick
-        prev_counts = counts.copy()
-        rate_ema = (1 - self.alpha)*self.rate_ema + self.alpha*spk.astype(np.float32)
-        # Scale & squash to [-1,1] (scale can be tuned)
-        scale = 0.1
-        a = np.tanh(scale * rate_ema)
+        counts = self.M_out.count[:]        # total spikes since start
+        spk = counts - self.prev_counts     # spikes this tick
+        self.prev_counts = counts.copy()
+        self.rate_ema = (1 - self.alpha)*self.rate_ema + self.alpha*spk.astype(np.float32)
+        a = np.tanh(0.5 * self.rate_ema)
         return a
+
 
     # ====== Input injection ======
     def set_input_from_obs(self, obs_vec):
@@ -238,14 +246,15 @@ class SpikingNetwork:
         obs_vec length N_in; map to input currents I.
         We use a simple affine map + clamp (replace with better normalization if needed).
         """
-        x = np.asarray(obs_vec, dtype=np.float32)
-        # Normalize with tanh to preserve detail
-        scale = 5
-        x = np.tanh(x / scale)
+        x = np.tile(np.asarray(obs_vec, dtype=np.float32), 3)
 
-        self.G_in.I[:]  = x      # Send input signal only to the input layer
-        self.G_h.I[:]   = 0.0    # Other layers only receive information through synapses
-        self.G_out.I[:] = 0.0
+        # Normalize with tanh to preserve detail
+        x = (x - np.median(x)) / (np.percentile(x,75)-np.percentile(x,25)+1e-6)
+        print("x: ", x)
+
+        self.G_in.I[:]  = x
+        self.G_h.I[:]   = 0.1                # hidden bias should also be able to spike
+        self.G_out.I[:] = 0               # small bias; out should rely on synaptic drive
 
     def set_reward(self, r):
         """Update global delta (RPE) and expose it to Brian namespace."""
@@ -265,6 +274,8 @@ class SpikingNetwork:
         """Run the model for one tick."""
         self.set_input_from_obs(obs)
         self.net.run(self.dt)
+        spk = self.M_out.count[:] - self.prev_counts
+        print("out_spikes_this_tick:", int(spk.sum()))
         return self.decode_actions().tolist()
     
     def get_weights(self):

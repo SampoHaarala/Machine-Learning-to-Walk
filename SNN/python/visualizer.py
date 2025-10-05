@@ -164,7 +164,7 @@ def plot_network(
     for tag, S, x_pre, y_pre, x_post, y_post in syn_list:
         try:
             # Brian2 arrays: one value per existing connection
-            w = S.w[:]
+            w = S.w_syn[:]
             i = S.i[:]  # presyn indices
             j = S.j[:]  # postsyn indices
             _draw_synapses(ax, x_pre, y_pre, x_post, y_post, i, j, w)
