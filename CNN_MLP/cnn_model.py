@@ -176,9 +176,25 @@ def train_cnn(
 
         train_loss = running / max(count, 1)
 
+        # --- Validation and logging ---
         if val_loader is not None:
+            # Evaluate on the validation set
             val_loss = _evaluate(model, val_loader, criterion, device)
+            # Keep the best model weights based on validation loss
             if val_loss < best_val:
                 best_val = val_loss
                 best_state = {k: v.detach().cpu().clone()
-                              for k, v in model.state_d_
+                              for k, v in model.state_dict().items()}
+            print(f"[ep {ep:03d}] train={train_loss:.4f}  val={val_loss:.4f}")
+        else:
+            print(f"[ep {ep:03d}] train={train_loss:.4f}")
+
+    # Restore best validation weights if available
+    if best_state is not None:
+        model.load_state_dict(best_state)
+
+    # Return final statistics
+    return {
+        "train_loss": float(train_loss),
+        "val_loss": float(best_val if val_loader is not None else train_loss),
+    }

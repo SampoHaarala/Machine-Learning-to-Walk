@@ -19,12 +19,12 @@ class Preproc:
     seq_len: int = 8       # CNN-ikkuna
     stride: int = 1        # CNN-liukuikkunan askel
 
-# --------- Lataus: (T, 10) ---------
-def load_rotations_10dof(path: str, *, rep: str = "rad", unwrap: bool = True) -> Tuple[np.ndarray, np.ndarray]:
+# --------- Lataus: (T, 12) ---------
+def load_rotations_12dof(path: str, *, rep: str = "rad", unwrap: bool = True) -> Tuple[np.ndarray, np.ndarray]:
     """
-    Lukee JSONin jossa: {"frames":[ {"time":..., "rotations":[10 floattia]}, ... ]}
+    Lukee JSONin jossa: {"frames":[ {"time":..., "rotations":[12 floattia]}, ... ]}
     Palauttaa:
-      feats: (T,10) valituilla DoF:illa
+      feats: (T,12) valituilla DoF:illa
       times: (T,)
     Esikäsittely:
       rep="deg"  -> asteet sellaisenaan
@@ -38,7 +38,7 @@ def load_rotations_10dof(path: str, *, rep: str = "rad", unwrap: bool = True) ->
         raise ValueError("No frames found in JSON.")
 
     times = np.array([float(fr.get("time", 0.0)) for fr in frames], dtype=np.float32)
-    R = np.array([fr["rotations"] for fr in frames], dtype=np.float32)  # (T,10)
+    R = np.array([fr["rotations"] for fr in frames], dtype=np.float32)  # (T,12)
 
     if rep == "deg":
         X = R
@@ -70,7 +70,7 @@ def make_xy_mlp(feats: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
 
 def make_xy_cnn(feats: np.ndarray, seq_len: int, stride: int) -> Tuple[np.ndarray, np.ndarray]:
     """
-    (T,D) -> X:(N,D,L) kanavat-ensin (10/L tai 20/L sincos), y:(N,D)
+    (T,D) -> X:(N,D,L) kanavat-ensin (12/L tai 20/L sincos), y:(N,D)
     """
     T, D = feats.shape
     if T <= seq_len:
@@ -130,9 +130,9 @@ def make_loaders_cnn(
 
 # --------- Päärajapinta: yksi funktio per käyttötapa ---------
 def load_for_mlp(path: str, cfg: Preproc = Preproc()) -> Tuple["DataLoader", Optional["DataLoader"]]:
-    feats, _ = load_rotations_10dof(path, rep=cfg.rep, unwrap=cfg.unwrap)
+    feats, _ = load_rotations_12dof(path, rep=cfg.rep, unwrap=cfg.unwrap)
     return make_loaders_mlp(feats, batch_size=256, split=0.8, center=cfg.center)
 
 def load_for_cnn(path: str, cfg: Preproc = Preproc()) -> Tuple["DataLoader", Optional["DataLoader"]]:
-    feats, _ = load_rotations_10dof(path, rep=cfg.rep, unwrap=cfg.unwrap)
+    feats, _ = load_rotations_12dof(path, rep=cfg.rep, unwrap=cfg.unwrap)
     return make_loaders_cnn(feats, seq_len=cfg.seq_len, stride=cfg.stride, batch_size=256, split=0.8)
