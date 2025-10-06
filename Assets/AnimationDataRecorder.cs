@@ -3,7 +3,7 @@ using System.IO;
 using UnityEngine;
 
 /// <summary>
-/// Records the positions (and optionally rotations) of specific bones on a humanoid during a looping animation.
+/// Records the rotations (and optionally rotations) of specific bones on a humanoid during a looping animation.
 /// Attach this script to any GameObject in your scene and populate the bone fields via the Inspector.
 /// When the recording duration elapses the collected data is saved to a JSON file in the persistent data path.
 /// You can adjust the recordDuration to match the length of your animation loop (e.g. ~0.77 seconds for a 23‑frame loop at 30 FPS).
@@ -43,6 +43,11 @@ public class AnimationDataRecorder : MonoBehaviour
     private float _nextSampleTime;
     private bool _isRecording;
 
+    public Collider rightFootCol;
+    public Collider leftFootCol;
+    private bool rightFootTouching = true;
+    private bool leftFootTouching = true;
+
     private void Start()
     {
         // Start recording on play
@@ -80,43 +85,50 @@ public class AnimationDataRecorder : MonoBehaviour
     }
 
     /// <summary>
-    /// Captures the current positions of the configured bones and stores them in the frames list.
+    /// Captures the current rotations of the configured bones and stores them in the frames list.
     /// </summary>
     private void RecordFrame()
     {
-        var frame = new FrameData
+        FrameData frame = new FrameData
         {
-            time = _elapsed
+            time = _elapsed,
+            rotations = new float[12]
         };
 
+        int i = 0;
         if (hip != null)
         {
-            frame.positions["hip"] = hip.localPosition;
+            frame.rotations[i] = hip.localEulerAngles.x; i++;
+            frame.rotations[i] = hip.localEulerAngles.y; i++;
         }
         if (leftLeg != null)
         {
-            frame.positions["leftLeg"] = leftLeg.localPosition;
+            frame.rotations[i] = leftLeg.localEulerAngles.x; i++;
+            frame.rotations[i] = leftLeg.localEulerAngles.y; i++;
         }
-        if (leftLeg != null)
+        if (rightLeg != null)
         {
-            frame.positions["leftLeg"] = leftLeg.localPosition;
+            frame.rotations[i] = rightLeg.localEulerAngles.x; i++;
+            frame.rotations[i] = rightLeg.localEulerAngles.y; i++;
         }
         if (leftKnee != null)
         {
-            frame.positions["leftKnee"] = leftKnee.localPosition;
+            frame.rotations[i] = leftKnee.localEulerAngles.x; i++;
         }
         if (rightKnee != null)
         {
-            frame.positions["rightKnee"] = rightKnee.localPosition;
+            frame.rotations[i] = rightKnee.localEulerAngles.x; i++;
         }
         if (leftAnkle != null)
         {
-            frame.positions["leftAnkle"] = leftAnkle.localPosition;
+            frame.rotations[i] = leftAnkle.localEulerAngles.x; i++;
         }
         if (rightAnkle != null)
         {
-            frame.positions["rightAnkle"] = rightAnkle.localPosition;
+            frame.rotations[i] = rightAnkle.localEulerAngles.x; i++;
         }
+        frame.rotations[i] = leftFootTouching ? 1 : 0; i++;
+        frame.rotations[i] = rightFootTouching ? 1 : 0;
 
         _frames.Add(frame);
     }
@@ -153,7 +165,7 @@ public class AnimationDataRecorder : MonoBehaviour
     private class FrameData
     {
         public float time;
-        public Dictionary<string, Vector3> positions = new Dictionary<string, Vector3>();
+        public float[] rotations;
     }
 
     /// <summary>
@@ -163,5 +175,17 @@ public class AnimationDataRecorder : MonoBehaviour
     private class FrameDataContainer
     {
         public List<FrameData> frames;
+    }
+
+    void OnCollisionStay(Collision c)
+    {
+        if (c.GetContact(0).thisCollider == leftFootCol) leftFootTouching = true;
+        else if (c.GetContact(0).thisCollider == rightFootCol) rightFootTouching = true;
+    }
+
+    void OnCollisionExit(Collision c)
+    {
+        leftFootTouching = false;
+        rightFootTouching = false;
     }
 }
