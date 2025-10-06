@@ -13,6 +13,10 @@ public class AnimationDataRecorder : MonoBehaviour
     [Header("Transforms to record")]
     [Tooltip("The root hip bone of your character.")]
     public Transform hip;
+    [Tooltip("Left leg bone.")]
+    public Transform leftLeg;
+    [Tooltip("Right leg bone.")]
+    public Transform rightLeg;
 
     [Tooltip("Left knee bone.")]
     public Transform leftKnee;
@@ -87,23 +91,31 @@ public class AnimationDataRecorder : MonoBehaviour
 
         if (hip != null)
         {
-            frame.positions["hip"] = hip.position;
+            frame.positions["hip"] = hip.localPosition;
+        }
+        if (leftLeg != null)
+        {
+            frame.positions["leftLeg"] = leftLeg.localPosition;
+        }
+        if (leftLeg != null)
+        {
+            frame.positions["leftLeg"] = leftLeg.localPosition;
         }
         if (leftKnee != null)
         {
-            frame.positions["leftKnee"] = leftKnee.position;
+            frame.positions["leftKnee"] = leftKnee.localPosition;
         }
         if (rightKnee != null)
         {
-            frame.positions["rightKnee"] = rightKnee.position;
+            frame.positions["rightKnee"] = rightKnee.localPosition;
         }
         if (leftAnkle != null)
         {
-            frame.positions["leftAnkle"] = leftAnkle.position;
+            frame.positions["leftAnkle"] = leftAnkle.localPosition;
         }
         if (rightAnkle != null)
         {
-            frame.positions["rightAnkle"] = rightAnkle.position;
+            frame.positions["rightAnkle"] = rightAnkle.localPosition;
         }
 
         _frames.Add(frame);
@@ -121,7 +133,7 @@ public class AnimationDataRecorder : MonoBehaviour
 
         // Build a filename based on date/time for uniqueness
         string fileName = $"animation_data_{System.DateTime.Now:yyyyMMdd_HHmmss}.json";
-        string filePath = Path.Combine(Application.persistentDataPath, fileName);
+        string filePath = Path.Combine("C:/Users/sampo/OneDrive/Documents/Machine Learning to Walk/Assets", fileName);
 
         try
         {
