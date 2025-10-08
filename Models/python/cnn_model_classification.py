@@ -113,6 +113,12 @@ def _evaluate(
     correct = 0
     for xb, yb in loader:
         xb, yb = xb.to(device), yb.to(device)
+        if classification:
+            if binary:
+                yb = yb.float().view(-1, 1)   # <-- add this
+            else:
+                yb = yb.long().view(-1)       # <-- and this
+
         preds = model(xb)
         loss = criterion(preds, yb)
         bs = xb.size(0)
@@ -123,44 +129,98 @@ def _evaluate(
             if binary:
                 probs = torch.sigmoid(preds.squeeze(1))
                 preds_cls = (probs >= 0.5).long()
-                correct += (preds_cls == yb.long()).sum().item()
+                correct += (preds_cls == yb.long().view(-1)).sum().item()
             else:
                 preds_cls = preds.argmax(dim=1)
                 correct += (preds_cls == yb).sum().item()
 
-    result: Dict[str, float] = {"loss": total_loss / max(total_samples, 1)}
-    if classification and total_samples > 0:
-        result["accuracy"] = correct / total_samples
-    return result
+    out = {"loss": total_loss / max(total_samples, 1)}
+    if classification and total_samples:
+        out["accuracy"] = correct / total_samples
+    return out
 
 
-def train_cnn(
-    model: nn.Module,
-    train_loader: DataLoader,
-    val_loader: Optional[DataLoader] = None,
-    *,
-    epochs: int = 20,
-    lr: float = 1e-3,
-    weight_decay: float = 0.0,
-    criterion: Optional[nn.Module] = None,
-    optimizer_cls = torch.optim.Adam,
-    device: Optional[torch.device] = None,
-    grad_clip: Optional[float] = None,
-    log_interval: int = 50,
-    classification: bool = False,
-    binary: bool = False,
-) -> Dict[str, float]:
-    """Minimal training loop for the CNN supporting regression and classification.
 
-    Parameters are similar to those of ``train_mlp``. When
-    ``classification=True`` the default loss switches to
-    ``BCEWithLogitsLoss`` (binary) or ``CrossEntropyLoss`` (multi‑class) and
-    accuracies are computed. For regression the default remains ``MSELoss``.
+def _as_bct(x: torch.Tensor) -> torch.Tensor:
     """
+    Ensure CNN input is (B, C, T).
+    Accepts (B, C, T) or (B, T, C) and permutes if needed.
+    """
+    if x.ndim != 3:
+        raise ValueError(f"Expected 3D tensor for CNN (B,C,T) or (B,T,C), got {tuple(x.shape)}")
+    B, A, B2 = x.shape
+    # Heuristic: channels should be "joint features" (e.g., 36), time should be long (>= 8)
+    # If the middle dim looks like time (>=8) and the last looks like channels (<256), treat as (B,T,C)
+    if A >= 8 and B2 < 256:
+        return x.permute(0, 2, 1).contiguous()  # (B,T,C) -> (B,C,T)
+    return x  # assume already (B,C,T)
+
+def _prep_targets(y: torch.Tensor, *, classification: bool, binary: bool) -> torch.Tensor:
+    """
+    Make targets match the criterion expectations:
+      - binary: float {0,1} with shape (B,1)
+      - multi : long  class indices with shape (B,)
+    """
+    if not classification:
+        return y  # not used here, but keep for completeness
+    if binary:
+        if y.dtype != torch.float32:
+            y = y.float()
+        return y.view(-1, 1)
+    else:
+        if y.dtype != torch.long:
+            y = y.long()
+        return y.view(-1)
+
+@torch.no_grad()
+def _evaluate_cnn(model: nn.Module, loader, criterion, device,
+                  *, classification: bool, binary: bool) -> Dict[str, float]:
+    model.eval()
+    tot_loss, tot_n, correct = 0.0, 0, 0
+    for xb, yb in loader:
+        xb = _as_bct(xb.to(device))
+        if classification:
+            yb = _prep_targets(yb.to(device), classification=True, binary=binary)
+        else:
+            yb = yb.to(device)
+
+        logits = model(xb)
+        loss = criterion(logits, yb)
+        bs = xb.size(0)
+        tot_loss += loss.item() * bs
+        tot_n += bs
+
+        if classification:
+            if binary:
+                preds = (torch.sigmoid(logits.squeeze(1)) >= 0.5).long()
+                gold  = yb.long().view(-1)
+            else:
+                preds = logits.argmax(dim=1)
+                gold  = yb
+            correct += (preds == gold).sum().item()
+
+    out = {"loss": tot_loss / max(tot_n, 1)}
+    if classification and tot_n:
+        out["accuracy"] = correct / tot_n
+    return out
+
+def train_cnn(model: nn.Module,
+              train_loader,
+              val_loader=None,
+              *,
+              epochs: int = 100,
+              lr: float = 1e-3,
+              weight_decay: float = 0.0,
+              classification: bool = False,
+              binary: bool = False,
+              criterion: Optional[nn.Module] = None,
+              optimizer_cls = torch.optim.Adam,
+              device: Optional[torch.device] = None) -> Dict[str, float]:
+
     device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device)
 
-    # Select criterion if none provided
+    # Choose criterion if not supplied
     if criterion is None:
         if classification:
             criterion = nn.BCEWithLogitsLoss() if binary else nn.CrossEntropyLoss()
@@ -169,96 +229,63 @@ def train_cnn(
 
     opt = optimizer_cls(model.parameters(), lr=lr, weight_decay=weight_decay)
 
-    best_val_loss = float("inf")
+    best_val = float("inf")
     best_state = None
-    step = 0
+    result: Dict[str, float] = {}
 
     for ep in range(1, epochs + 1):
         model.train()
-        running_loss = 0.0
-        running_correct = 0
-        count = 0
+        run_loss, run_n, run_correct = 0.0, 0, 0
+
         for xb, yb in train_loader:
-            xb, yb = xb.to(device), yb.to(device)
+            xb = _as_bct(xb.to(device))
             if classification:
-                if binary:
-                    yb = yb.float().view(-1, 1)
-                else:
-                    yb = yb.long().view(-1)
+                yb = _prep_targets(yb.to(device), classification=True, binary=binary)
+            else:
+                yb = yb.to(device)
 
-            opt.zero_grad(set_to_none=True)
-            preds = model(xb)
-            loss = criterion(preds, yb)
+            opt.zero_grad()
+            logits = model(xb)
+            loss = criterion(logits, yb)
             loss.backward()
-            if grad_clip is not None:
-                nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
             opt.step()
+
             bs = xb.size(0)
-            running_loss += loss.item() * bs
-            count += bs
-            step += 1
+            run_loss += loss.item() * bs
+            run_n += bs
+
             if classification:
                 if binary:
-                    probs = torch.sigmoid(preds.detach().squeeze(1))
-                    preds_cls = (probs >= 0.5).long()
-                    running_correct += (preds_cls == yb.long()).sum().item()
+                    preds = (torch.sigmoid(logits.squeeze(1)) >= 0.5).long()
+                    gold  = yb.long().view(-1)
                 else:
-                    preds_cls = preds.detach().argmax(dim=1)
-                    running_correct += (preds_cls == yb).sum().item()
-            if log_interval and step % log_interval == 0:
-                avg_loss = running_loss / max(count, 1)
-                if classification:
-                    avg_acc = running_correct / max(count, 1)
-                    print(f"[ep {ep:03d} step {step:06d}] train_loss={avg_loss:.4f} train_acc={avg_acc:.4f}")
-                else:
-                    print(f"[ep {ep:03d} step {step:06d}] train_loss={avg_loss:.4f}")
+                    preds = logits.argmax(dim=1)
+                    gold  = yb
+                run_correct += (preds == gold).sum().item()
 
-        # End of epoch stats
-        train_stats: Dict[str, float] = {"train_loss": running_loss / max(count, 1)}
+        train_loss = run_loss / max(run_n, 1)
+        result["train_loss"] = train_loss
         if classification:
-            train_stats["train_accuracy"] = running_correct / max(count, 1)
+            result["train_accuracy"] = run_correct / max(run_n, 1)
 
+        # validation
         if val_loader is not None:
-            val_result = _evaluate(model, val_loader, criterion, device, classification=classification, binary=binary)
-            val_loss = val_result["loss"]
-            train_stats["val_loss"] = val_loss
+            val_stats = _evaluate_cnn(model, val_loader, criterion, device,
+                                      classification=classification, binary=binary)
+            val_loss = val_stats["loss"]
+            if val_loss < best_val:
+                best_val = val_loss
+                best_state = {k: v.clone() for k, v in model.state_dict().items()}
+            result["val_loss"] = val_loss
             if classification:
-                train_stats["val_accuracy"] = val_result.get("accuracy", 0.0)
-            if val_loss < best_val_loss:
-                best_val_loss = val_loss
-                best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+                result["val_accuracy"] = val_stats.get("accuracy", 0.0)
 
-        # Epoch summary
-        if classification:
-            if val_loader is not None:
-                print(f"[ep {ep:03d}] train_loss={train_stats['train_loss']:.4f} train_acc={train_stats['train_accuracy']:.4f} "
-                      f"val_loss={train_stats['val_loss']:.4f} val_acc={train_stats['val_accuracy']:.4f}")
-            else:
-                print(f"[ep {ep:03d}] train_loss={train_stats['train_loss']:.4f} train_acc={train_stats['train_accuracy']:.4f}")
-        else:
-            if val_loader is not None:
-                print(f"[ep {ep:03d}] train_loss={train_stats['train_loss']:.4f} val_loss={train_stats['val_loss']:.4f}")
-            else:
-                print(f"[ep {ep:03d}] train_loss={train_stats['train_loss']:.4f}")
-
-    # Restore best validation weights
     if best_state is not None:
         model.load_state_dict(best_state)
 
-    # Prepare final results
-    result: Dict[str, float] = {}
-    if classification:
-        result["train_loss"] = train_stats["train_loss"]
-        result["train_accuracy"] = train_stats["train_accuracy"]
-        if val_loader is not None:
-            result["val_loss"] = best_val_loss
-            val_res = _evaluate(model, val_loader, criterion, device, classification=True, binary=binary)
-            result["val_accuracy"] = val_res.get("accuracy", 0.0)
-        else:
-            result["val_loss"] = train_stats["train_loss"]
-            result["val_accuracy"] = train_stats["train_accuracy"]
-    else:
-        result["train_loss"] = train_stats["train_loss"]
-        result["val_loss"] = best_val_loss if val_loader is not None else train_stats["train_loss"]
+    if val_loader is None:
+        result.setdefault("val_loss", result["train_loss"])
+        if classification:
+            result.setdefault("val_accuracy", result.get("train_accuracy", 0.0))
 
     return result

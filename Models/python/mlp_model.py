@@ -161,8 +161,9 @@ def train_mlp(
     model.to(device)
 
     # for sin/cos preprocessing (D = 2 * num_angles; e.g., 20 or 24)
-    criterion = criterion or nn.MSELoss()
+    criterion = criterion or nn.MSELoss() # Mean Squared Error loss for regression
     #criterion = SineCosLoss(unit_penalty=1e-2, normalize_pred=True)
+    #criterion = nn.CrossEntropyLoss() # Criterion for classification
 
 
     # Build optimizer from provided class (Adam by default)

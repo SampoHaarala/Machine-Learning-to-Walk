@@ -167,6 +167,20 @@ def make_xy_cnn(feats: np.ndarray, seq_len: int) -> Tuple[np.ndarray, np.ndarray
 def parse_hidden(s: str):
     return [int(x) for x in s.split(",")] if s else []
 
+def load_features_and_label_from_json(path: str):
+    """Return (feats, label_str). feats shape (T, D)."""
+    with open(path, "r", encoding="utf-8") as f:
+        js = json.load(f)
+    frames = js["frames"]
+    feats = np.array([fr["rotations"] for fr in frames], dtype=np.float32)  # (T,D)
+    label = js.get("label", None)  # e.g., "standing", "walking"
+    return feats, label
+
+def make_clip_level_features(feats: np.ndarray, aggregate: str = "mean"):
+    """Convert (T,D) -> (D,) or (T*D,) for MLP; CNN takes (D,T) later."""
+    if aggregate == "flatten":
+        return feats.reshape(-1).astype(np.float32)
+    return feats.mean(axis=0).astype(np.float32)
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train an MLP or CNN on recorded rotation data.")
@@ -174,43 +188,74 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--model", choices=["mlp", "cnn"], default="mlp", help="Type of network to train.")
     parser.add_argument("--hidden", type=str, default="256,128", help="Hidden layer sizes for the MLP.")
     parser.add_argument("--seq-len", type=int, default=8, help="Input window length for CNN (>=2).")
+    parser.add_argument("--aggregate", choices=["mean","flatten"], default="mean", help="MLP only")
     parser.add_argument("--epochs", type=int, default=10000, help="Number of training epochs.")
     parser.add_argument("--lr", type=float, default=1e-3, help="Learning rate.")
     parser.add_argument("--weight-decay", type=float, default=0.0, help="L2 weight decay.")
     parser.add_argument("--out", required=True, help="Path to save the trained model (.pt).")
     parser.add_argument("--device", default=None, help="Device to train on (e.g. cuda or cpu).")
+    parser.add_argument("--classification", action="store_true", default=True, help="Set up the model for classification.")
+    parser.add_argument("--binary", action="store_true", default=True, help="If used for classification, is it binary?")
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
-    
-    # Load and concatenate all recordings
-    all_feats: List[np.ndarray] = []
-    for path in sorted(glob.glob(args.data_glob)):
-        feats = load_features_from_json(path)
-        all_feats.append(feats)
-    feats_concat = np.concatenate(all_feats, axis=0)
 
-    # Determine dimensionality
-    D = feats_concat.shape[1]
+    # Load all clips + labels
+    clips: List[np.ndarray] = []
+    labels: List[str] = []
+    for path in sorted(glob.glob(args.data_glob)):
+        feats, lab = load_features_and_label_from_json(path)  # feats: (T,D)
+        if lab is None:
+            raise SystemExit(f"Missing 'label' in {path}")
+        clips.append(feats)
+        labels.append(lab)
+
+    # Build label map
+    classes = sorted(set(labels))
+    label2idx = {c:i for i,c in enumerate(classes)}
+    y_idx = np.array([label2idx[s] for s in labels], dtype=np.int64)
+
+    # Determine D (feature dim)
+    T0, D = clips[0].shape
+    # Clip-level features
+    X_list = [make_clip_level_features(f, aggregate=args.aggregate) for f in clips]  # [(D,) or (T*D,)]
+    X = np.stack(X_list, axis=0)  # (N, F)
+
+    # Targets + out_dim
+    if args.binary:
+        if len(classes) != 2:
+            raise SystemExit(f"--binary requires exactly 2 classes; found {classes}")
+        y = y_idx.astype(np.float32)         # BCE targets {0,1}
+        out_dim = 1
+    else:
+        y = y_idx.astype(np.int64)           # CE targets [0..C-1]
+        out_dim = len(classes)
+
+    import torch.utils.data as data
+    X_t = torch.from_numpy(X)
+    y_t = torch.from_numpy(y)
+    ds = data.TensorDataset(X_t, y_t)
+    loader = data.DataLoader(ds, batch_size=256, shuffle=True)
+
     if args.model == "mlp":
-        X, y = make_xy_mlp(feats_concat)
         # Convert to PyTorch tensors and wrap in DataLoader
-        import torch.utils.data as data
-        ds = data.TensorDataset(torch.from_numpy(X), torch.from_numpy(y))
-        loader = data.DataLoader(ds, batch_size=256, shuffle=True)
-        model = build_mlp(input_dim=D, output_dim=1, hidden_layers=parse_hidden(args.hidden))
+        model = build_mlp(input_dim=X.shape[1], output_dim=out_dim, hidden_layers=parse_hidden(args.hidden), classification=args.classification, binary=args.binary)
         # Train
-        train_mlp(model, loader, val_loader=None, epochs=args.epochs, lr=args.lr, weight_decay=args.weight_decay)
+        # If your train_mlp expects BCE targets shape [N,1], do: y_t = y_t.view(-1,1)
+        train_mlp(model, loader, val_loader=None,
+                  epochs=args.epochs, lr=args.lr, weight_decay=args.weight_decay,
+                  classification=True, binary=args.binary)
     else:
         # CNN: build sliding windows
-        X, y = make_xy_cnn(feats_concat, seq_len=args.seq_len)
-        import torch.utils.data as data
-        ds = data.TensorDataset(torch.from_numpy(X), torch.from_numpy(y))
-        loader = data.DataLoader(ds, batch_size=128, shuffle=True)
-        model = build_cnn(input_channels=D, output_dim=1)
-        train_cnn(model, loader, val_loader=None, epochs=args.epochs, lr=args.lr, weight_decay=args.weight_decay)
+        model = build_cnn(input_channels=D, output_dim=out_dim)   # <-- use D, not X.shape[1]
+        train_cnn(
+            model, loader, val_loader=None,
+            epochs=args.epochs, lr=args.lr, weight_decay=args.weight_decay,
+            classification=True, binary=args.binary
+            )
+
     # Save model
     os.makedirs(os.path.dirname(args.out), exist_ok=True)
     torch.save(model.state_dict(), args.out)

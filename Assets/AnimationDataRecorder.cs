@@ -63,6 +63,9 @@ public class AnimationDataRecorder : MonoBehaviour
     public Collider leftFootCol;
     private bool rightFootTouching = true;
     private bool leftFootTouching = true;
+    private Animator animator;
+    private string firstClipName;
+    private int currentAnimation = 0;
 
     private void Start()
     {
@@ -70,12 +73,16 @@ public class AnimationDataRecorder : MonoBehaviour
         _elapsed = 0f;
         _nextSampleTime = 0f;
         _frames.Clear();
+
+        animator = GetComponent<Animator>();
+        firstClipName = animator.GetCurrentAnimatorClipInfo(0)[0].clip.name;
     }
 
     private void Update()
     {
         if (!_isRecording) return;
 
+        animator.SetBool("next", false);
         _elapsed += Time.deltaTime;
 
         if (sampleInterval <= 0f || _elapsed >= _nextSampleTime)
@@ -86,8 +93,13 @@ public class AnimationDataRecorder : MonoBehaviour
 
         if (_elapsed >= recordDuration)
         {
-            _isRecording = false;
+            if (animator.GetCurrentAnimatorClipInfo(0)[0].clip.name == firstClipName && currentAnimation != 0) _isRecording = false;
+            animator.SetBool("next", true);
             SaveToJson();
+            _frames.Clear();
+            _elapsed = 0f;
+            _nextSampleTime = 0f;
+            currentAnimation++;
         }
     }
 
@@ -153,7 +165,7 @@ public class AnimationDataRecorder : MonoBehaviour
         var container = new FrameDataContainer { label = label, frames = _frames };
         string json = JsonUtility.ToJson(container, prettyPrint: true);
         // Build a filename based on date/time for uniqueness
-        string fileName = $"animation_data_{System.DateTime.Now:yyyyMMdd_HHmmss}.json";
+        string fileName = $"animation_data_{System.DateTime.Now:yyyyMMdd_HHmmss}_{currentAnimation}.json";
         // Save to persistent data path so that it works across platforms
         string filePath = Path.Combine("C:/Users/sampo/OneDrive/Documents/Machine Learning to Walk/Assets", fileName);
         try

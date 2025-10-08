@@ -167,7 +167,7 @@ def main():
             input_dim = T0 * F0
         else:
             input_dim = F0
-        model = build_mlp(input_dim=input_dim, hidden_layers=parse_hidden(args.hidden), output_dim=out_dim)
+        model = build_mlp(input_dim=input_dim, hidden_layers=parse_hidden(args.hidden), output_dim=out_dim, binary=args.binary, classification=True)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device)
@@ -191,7 +191,7 @@ def main():
     if metrics:
         print({k: round(v,4) for k,v in metrics.items()})
     print("label_map:", label2idx)
-    for row in per_file[:10]:
+    for row in per_file:
         print("pred:", row)  # (filename, prob / prob_list, pred_idx)
 
     # Optional: confusion matrix if labels exist
