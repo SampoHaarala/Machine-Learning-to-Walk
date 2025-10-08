@@ -50,6 +50,10 @@ public class AnimationDataRecorder : MonoBehaviour
     public float recordDuration = 1f;
     public float sampleInterval = 0f;
 
+    [Header("Classification")]
+    [Tooltip("Label for this animation (e.g., 'standing', 'walking', 'running').")]
+    public string label = "walking";
+
     private readonly List<FrameData> _frames = new();
     private float _elapsed;
     private float _nextSampleTime;
@@ -138,14 +142,20 @@ public class AnimationDataRecorder : MonoBehaviour
         _frames.Add(frame);
     }
 
+    /// <summary>
+    /// Serializes the recorded frames to JSON and writes them to a file on disk.
+    /// The output file will be created in Application.persistentDataPath.
+    /// A label is included to support supervised classification.
+    /// </summary>
     private void SaveToJson()
     {
-        var container = new FrameDataContainer { frames = _frames };
+        // Wrap the list in a container so Unity's JsonUtility can serialize it and include the label
+        var container = new FrameDataContainer { label = label, frames = _frames };
         string json = JsonUtility.ToJson(container, prettyPrint: true);
-
+        // Build a filename based on date/time for uniqueness
         string fileName = $"animation_data_{System.DateTime.Now:yyyyMMdd_HHmmss}.json";
-        string filePath = Path.Combine("C:/Users/sampo/OneDrive/Documents/Machine Learning to Walk/Assets/", fileName);
-
+        // Save to persistent data path so that it works across platforms
+        string filePath = Path.Combine("C:/Users/sampo/OneDrive/Documents/Machine Learning to Walk/Assets", fileName);
         try
         {
             File.WriteAllText(filePath, json);
@@ -157,8 +167,25 @@ public class AnimationDataRecorder : MonoBehaviour
         }
     }
 
-    [System.Serializable] private class FrameData { public float time; public float[] rotations; }
-    [System.Serializable] private class FrameDataContainer { public List<FrameData> frames; }
+    /// <summary>
+    /// Represents a single frame of animation data.
+    /// </summary>
+    [System.Serializable]
+    private class FrameData
+    {
+        public float time;
+        public float[] rotations;
+    }
+
+        /// <summary>
+    /// Wrapper class so that JsonUtility can serialize a list of frames and a label.
+    /// </summary>
+    [System.Serializable]
+    private class FrameDataContainer
+    {
+        public string label;
+        public List<FrameData> frames;
+    }
 
     void OnCollisionStay(Collision c)
     {

@@ -75,17 +75,15 @@ Notes
 
 from __future__ import annotations
 
-import argparse
-import json
-import os
+import json, glob, argparse, os
 from pathlib import Path
 from typing import List, Tuple, Optional
 
 import numpy as np
 import torch
 
-from mlp_model import build_mlp, train_mlp
-from cnn_model import build_cnn, train_cnn
+from mlp_model_classification import build_mlp, train_mlp
+from cnn_model_classification import build_cnn, train_cnn
 
 
 def load_features_from_json(path: str) -> np.ndarray:
@@ -172,7 +170,7 @@ def parse_hidden(s: str):
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train an MLP or CNN on recorded rotation data.")
-    parser.add_argument("--jsons", nargs="+", required=True, help="One or more JSON files with recorded rotations.")
+    parser.add_argument("--data_glob", required=True, default="*.json", help="One or more JSON files with recorded rotations.")
     parser.add_argument("--model", choices=["mlp", "cnn"], default="mlp", help="Type of network to train.")
     parser.add_argument("--hidden", type=str, default="256,128", help="Hidden layer sizes for the MLP.")
     parser.add_argument("--seq-len", type=int, default=8, help="Input window length for CNN (>=2).")
@@ -186,9 +184,10 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+    
     # Load and concatenate all recordings
     all_feats: List[np.ndarray] = []
-    for path in args.jsons:
+    for path in sorted(glob.glob(args.data_glob)):
         feats = load_features_from_json(path)
         all_feats.append(feats)
     feats_concat = np.concatenate(all_feats, axis=0)
@@ -201,7 +200,7 @@ def main() -> None:
         import torch.utils.data as data
         ds = data.TensorDataset(torch.from_numpy(X), torch.from_numpy(y))
         loader = data.DataLoader(ds, batch_size=256, shuffle=True)
-        model = build_mlp(input_dim=D, output_dim=D, hidden_layers=parse_hidden(args.hidden))
+        model = build_mlp(input_dim=D, output_dim=1, hidden_layers=parse_hidden(args.hidden))
         # Train
         train_mlp(model, loader, val_loader=None, epochs=args.epochs, lr=args.lr, weight_decay=args.weight_decay)
     else:
@@ -210,7 +209,7 @@ def main() -> None:
         import torch.utils.data as data
         ds = data.TensorDataset(torch.from_numpy(X), torch.from_numpy(y))
         loader = data.DataLoader(ds, batch_size=128, shuffle=True)
-        model = build_cnn(input_channels=D, output_dim=D)
+        model = build_cnn(input_channels=D, output_dim=1)
         train_cnn(model, loader, val_loader=None, epochs=args.epochs, lr=args.lr, weight_decay=args.weight_decay)
     # Save model
     os.makedirs(os.path.dirname(args.out), exist_ok=True)
