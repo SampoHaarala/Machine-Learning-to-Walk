@@ -19,6 +19,7 @@ from __future__ import annotations
 from typing import List, Optional, Dict
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
 
@@ -51,7 +52,7 @@ def build_mlp(
     """
     # Default two hidden layers if none provided
     if hidden_layers is None:
-        hidden_layers = [128, 64]
+        hidden_layers = [256, 128]
 
     layers: List[nn.Module] = []
     in_f = input_dim
@@ -159,8 +160,10 @@ def train_mlp(
     # Make sure model weights/buffers live on the same device as data
     model.to(device)
 
-    # Default loss: MSE (works for regression). Change for classification.
+    # for sin/cos preprocessing (D = 2 * num_angles; e.g., 20 or 24)
     criterion = criterion or nn.MSELoss()
+    #criterion = SineCosLoss(unit_penalty=1e-2, normalize_pred=True)
+
 
     # Build optimizer from provided class (Adam by default)
     opt = optimizer_cls(model.parameters(), lr=lr, weight_decay=weight_decay)
@@ -185,6 +188,7 @@ def train_mlp(
             preds = model(xb)
 
             # Compute loss for this batch
+            
             loss = criterion(preds, yb)
 
             # Backpropagate to compute gradients
@@ -250,3 +254,33 @@ def train_mlp(
 #     model = build_mlp(input_dim=32, output_dim=10)
 #     history = train_mlp(model, train_loader, epochs=5)
 #     print(history)
+
+class SineCosLoss(nn.Module):
+    """
+    pred,target: (B, 2*K) with layout [sin..., cos...]
+    Optionally L2-normalizes predicted pairs to the unit circle.
+    """
+    def __init__(self, unit_penalty: float = 1e-2, normalize_pred: bool = True):
+        super().__init__()
+        self.unit_penalty = unit_penalty
+        self.normalize_pred = normalize_pred
+
+    def forward(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+        B, D = pred.shape
+        assert D % 2 == 0, "Expect even dim: [sin..., cos...]"
+        K = D // 2
+        ps, pc = pred[:, :K], pred[:, K:]
+        ts, tc = target[:, :K], target[:, K:]
+
+        if self.normalize_pred:
+            # project predicted pairs onto unit circle to avoid drift
+            denom = torch.clamp(torch.sqrt(ps**2 + pc**2), min=1e-8)
+            ps, pc = ps/denom, pc/denom
+
+        # chordal MSE on unit circle
+        mse = F.mse_loss(ps, ts) + F.mse_loss(pc, tc)
+
+        # small penalty to keep (sin,cos) near unit circle even if normalize_pred=False
+        unit_pen = ((ps**2 + pc**2 - 1.0)**2).mean()
+
+        return mse + self.unit_penalty * unit_pen

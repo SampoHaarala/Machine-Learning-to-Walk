@@ -58,11 +58,32 @@ def load_rotations_12dof(path: str, *, rep: str = "rad", unwrap: bool = True) ->
     if rep == "sin_cos":
         rad = np.deg2rad(R)
         # ei unwrapia, koska sin/cos poistaa diskontinuitetin
-        X = np.concatenate([np.sin(rad), np.cos(rad)], axis=1)  # (T,20)
+        X = np.concatenate([np.sin(rad), np.cos(rad)], axis=1)  # (T,24)
         return X.astype(np.float32), times
 
     raise ValueError(f"Unknown rep: {rep}")
 
+# --------- Convert data ------
+def convert_obs(feats: List[float], rep: str, unwrap: bool = True) -> List[float]:
+    X = np.asarray(feats, dtype=float)  # ensures float64 view/cast
+    if rep == "deg":
+        if unwrap:
+            rad = np.unwrap(np.deg2rad(X), axis=0)
+            X = np.rad2deg(rad)
+        return X.ravel().tolist()
+
+    if rep == "rad":
+        rad = np.deg2rad(X)
+        if unwrap:
+            rad = np.unwrap(rad, axis=0)
+        return rad.ravel().tolist()
+
+    if rep == "sin_cos":
+        rad = np.deg2rad(X)
+        sc = np.concatenate([np.sin(rad), np.cos(rad)], axis=0)
+        return sc.ravel().tolist()
+
+    raise ValueError(f"Unknown rep: {rep}")
 # --------- Oppiparit ---------
 def make_xy_mlp(feats: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
     """(T,D) -> X:(T-1,D), y:(T-1,D)"""

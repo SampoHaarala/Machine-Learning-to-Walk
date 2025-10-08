@@ -971,6 +971,5 @@ AssetOrigin:
   productId: 154271
   packageName: Human Basic Motions FREE
   packageVersion: 2.4.1
-  assetPath: Assets/Kevin Iglesias/Human Animations/Animations/Female/Movement/Walk/RootMotion/HumanF@Walk01_Right
-    [RM].fbx
+  assetPath: Assets/Walk/RootMotion/HumanF@Walk01_Right [RM].fbx
   uploadId: 762151
